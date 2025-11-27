@@ -1,0 +1,320 @@
+﻿@{
+    ViewData["Title"] = "Chat";
+}
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>SignalR MVC Chat</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- Bootstrap for quick UI (CDN) -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" />
+    <style>
+        .user-list {
+            max-height: 300px;
+            overflow: auto;
+        }
+
+        .messages {
+            max-height: 400px;
+            overflow: auto;
+            background: #f8f9fa;
+            padding: 10px;
+        }
+
+        .message-item {
+            margin-bottom: 8px;
+        }
+
+        .typing {
+            font-style: italic;
+            color: #6c757d;
+        }
+
+        .selected {
+            background: #e9ecef;
+        }
+    </style>
+</head>
+<body class="p-4">
+    <div class="container">
+        <h3>SignalR Chat (MVC) — Private, Groups, Online & Typing</h3>
+        <div class="row mt-3">
+            <div class="col-md-3">
+                <label>Your name</label>
+                <input id="userInput" class="form-control mb-2" placeholder="Enter name" />
+                <button id="connectBtn" class="btn btn-success w-100 mb-2">Connect</button>
+
+                <div>
+                    <h6>Online Users</h6>
+                    <ul id="usersList" class="list-group user-list"></ul>
+                </div>
+
+                <div class="mt-3">
+                    <h6>Groups (Rooms)</h6>
+                    <div class="input-group mb-2">
+                        <input id="groupNameInput" class="form-control" placeholder="group name" />
+                        <button id="createJoinGroupBtn" class="btn btn-primary">Join / Create</button>
+                    </div>
+                    <ul id="groupsList" class="list-group user-list"></ul>
+                </div>
+            </div>
+
+            <div class="col-md-9">
+                <div class="d-flex mb-2">
+                    <div class="me-3">
+                        <strong>Chat target:</strong>
+                        <span id="chatTargetLabel">Public</span>
+                    </div>
+                    <div>
+                        <button id="publicBtn" class="btn btn-outline-secondary btn-sm">Public</button>
+                    </div>
+                </div>
+
+                <div id="messages" class="messages border rounded"></div>
+                <div id="typingIndicator" class="typing mt-1"></div>
+
+                <div class="input-group mt-2">
+                    <input id="messageInput" class="form-control" placeholder="Type a message..." />
+                    <button id="sendBtn" class="btn btn-primary">Send</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js"></script>
+    <script>
+        let connection = null;
+        let currentUser = null;
+        let selectedTarget = { type: 'public', name: null }; // type: public | user | group
+        const usersListEl = document.getElementById('usersList');
+        const groupsListEl = document.getElementById('groupsList');
+        const messagesEl = document.getElementById('messages');
+        const chatTargetLabel = document.getElementById('chatTargetLabel');
+        const typingIndicatorEl = document.getElementById('typingIndicator');
+
+        // Keep local state of groups the client has joined
+        const joinedGroups = new Set();
+
+        // typing debounce
+        let typingTimeout = null;
+
+        document.getElementById('connectBtn').addEventListener('click', async () => {
+            if (connection) {
+                alert('Already connected.');
+                return;
+            }
+            currentUser = document.getElementById('userInput').value.trim();
+            if (!currentUser) { alert('Enter your name'); return; }
+
+            // connect with user query string so server knows username
+            connection = new signalR.HubConnectionBuilder()
+                .withUrl(`/chatHub?user=${encodeURIComponent(currentUser)}`)
+                .withAutomaticReconnect()
+                .build();
+
+            // handlers
+            connection.on('UsersUpdated', (users) => {
+                renderUsers(users);
+            });
+
+            connection.on('ReceiveMessage', (user, message, timestamp) => {
+                appendMessage(`${formatTime(timestamp)} [Public] ${user}: ${message}`);
+            });
+
+            connection.on('ReceivePrivateMessage', (fromUser, toUser, message, timestamp) => {
+                const meTag = (toUser === currentUser) ? `(private from ${fromUser})` : `(private to ${toUser})`;
+                appendMessage(`${formatTime(timestamp)} ${meTag} ${fromUser} -> ${toUser}: ${message}`);
+            });
+
+            connection.on('ReceiveGroupMessage', (user, groupName, message, timestamp) => {
+                appendMessage(`${formatTime(timestamp)} [${groupName}] ${user}: ${message}`);
+            });
+
+            connection.on('GroupSystemMessage', (text, timestamp) => {
+                appendMessage(`${formatTime(timestamp)} [system] ${text}`);
+            });
+
+            connection.on('UserTyping', (fromUser, toUser) => {
+                if (toUser === currentUser) {
+                    showTyping(`${fromUser} is typing...`);
+                }
+            });
+
+            connection.on('GroupTyping', (fromUser, groupName) => {
+                if (joinedGroups.has(groupName)) {
+                    showTyping(`${fromUser} is typing in ${groupName}...`);
+                }
+            });
+
+            // start
+            try {
+                await connection.start();
+                appendMessage(`[system] Connected as ${currentUser}`);
+                // request users list will be pushed by server automatically on connect
+            } catch (err) {
+                console.error(err);
+                alert('Connection failed: ' + err);
+            }
+        });
+
+        document.getElementById('sendBtn').addEventListener('click', async () => {
+            await sendMessage();
+        });
+
+        document.getElementById('messageInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                sendMessage();
+                return;
+            }
+            if (!connection) return;
+            notifyTyping();
+        });
+
+        async function sendMessage() {
+            if (!connection) { alert('Connect first'); return; }
+            const text = document.getElementById('messageInput').value.trim();
+            if (!text) return;
+
+            try {
+                if (selectedTarget.type === 'public') {
+                    await connection.invoke('SendMessageToAll', currentUser, text);
+                } else if (selectedTarget.type === 'user') {
+                    await connection.invoke('SendPrivateMessage', currentUser, selectedTarget.name, text);
+                } else if (selectedTarget.type === 'group') {
+                    await connection.invoke('SendMessageToGroup', currentUser, selectedTarget.name, text);
+                }
+                document.getElementById('messageInput').value = '';
+                // locally show what you sent (server will also broadcast to sender if code does)
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        function appendMessage(text) {
+            const div = document.createElement('div');
+            div.className = 'message-item';
+            div.textContent = text;
+            messagesEl.appendChild(div);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+
+        function renderUsers(users) {
+            usersListEl.innerHTML = '';
+            users.forEach(u => {
+                // skip self
+                const li = document.createElement('li');
+                li.className = 'list-group-item d-flex justify-content-between align-items-center';
+                li.textContent = u + (u === currentUser ? ' (you)' : '');
+                li.style.cursor = 'pointer';
+                li.addEventListener('click', () => {
+                    if (u === currentUser) {
+                        // set public
+                        setTarget('public', null);
+                        return;
+                    }
+                    // toggle selection
+                    setTarget('user', u);
+                });
+                usersListEl.appendChild(li);
+            });
+        }
+
+        document.getElementById('createJoinGroupBtn').addEventListener('click', async () => {
+            const group = document.getElementById('groupNameInput').value.trim();
+            if (!group) { alert('Enter group name'); return; }
+            if (!connection) { alert('Connect first'); return; }
+
+            try {
+                await connection.invoke('JoinGroup', group);
+                joinedGroups.add(group);
+                renderGroups();
+                setTarget('group', group);
+            } catch (err) {
+                console.error(err);
+            }
+        });
+
+        function renderGroups() {
+            groupsListEl.innerHTML = '';
+            Array.from(joinedGroups).forEach(g => {
+                const li = document.createElement('li');
+                li.className = 'list-group-item d-flex justify-content-between align-items-center';
+                li.textContent = g;
+                li.style.cursor = 'pointer';
+                li.addEventListener('click', () => setTarget('group', g));
+                const leaveBtn = document.createElement('button');
+                leaveBtn.className = 'btn btn-sm btn-outline-danger';
+                leaveBtn.textContent = 'Leave';
+                leaveBtn.addEventListener('click', async (ev) => {
+                    ev.stopPropagation();
+                    try {
+                        await connection.invoke('LeaveGroup', g);
+                        joinedGroups.delete(g);
+                        renderGroups();
+                        setTarget('public', null);
+                    } catch (err) {
+                        console.error(err);
+                    }
+                });
+                li.appendChild(leaveBtn);
+                groupsListEl.appendChild(li);
+            });
+        }
+
+        function setTarget(type, name) {
+            selectedTarget.type = type;
+            selectedTarget.name = name;
+            if (type === 'public') chatTargetLabel.textContent = 'Public';
+            else if (type === 'user') chatTargetLabel.textContent = `Private: ${name}`;
+            else if (type === 'group') chatTargetLabel.textContent = `Group: ${name}`;
+            highlightSelected();
+        }
+
+        function highlightSelected() {
+            // simple highlight in lists
+            Array.from(usersListEl.children).forEach(li => {
+                li.classList.remove('selected');
+                const txt = li.textContent.replace(' (you)', '');
+                if (selectedTarget.type === 'user' && txt === selectedTarget.name) li.classList.add('selected');
+            });
+            Array.from(groupsListEl.children).forEach(li => {
+                li.classList.remove('selected');
+                const groupText = li.firstChild ? li.firstChild.textContent : li.textContent;
+                if (selectedTarget.type === 'group' && groupText === selectedTarget.name) li.classList.add('selected');
+            });
+        }
+
+        document.getElementById('publicBtn').addEventListener('click', () => setTarget('public', null));
+
+        function notifyTyping() {
+            if (!connection) return;
+            if (selectedTarget.type === 'user') {
+                connection.invoke('TypingToUser', currentUser, selectedTarget.name).catch(() => { });
+            } else if (selectedTarget.type === 'group') {
+                connection.invoke('TypingToGroup', currentUser, selectedTarget.name).catch(() => { });
+            }
+            // debounce hide
+            showTyping('You are typing...');
+            if (typingTimeout) clearTimeout(typingTimeout);
+            typingTimeout = setTimeout(() => typingIndicatorEl.textContent = '', 1500);
+        }
+
+        function showTyping(text) {
+            typingIndicatorEl.textContent = text;
+            if (typingTimeout) clearTimeout(typingTimeout);
+            typingTimeout = setTimeout(() => typingIndicatorEl.textContent = '', 2000);
+        }
+
+        function formatTime(utc) {
+            try {
+                const d = new Date(utc);
+                return d.toLocaleTimeString();
+            } catch {
+                return '';
+            }
+        }
+    </script>
+</body>
+</html>
