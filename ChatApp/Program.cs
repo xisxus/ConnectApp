@@ -1,3 +1,4 @@
+using ChatApp.Hubs;
 using ChatApp.Models;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.EntityFrameworkCore;
@@ -41,6 +42,8 @@ app.MapControllerRoute(
 
 
 app.MapHub<ChatApp.Hubs.ChatHub>("/chatHub");
+app.MapHub<CallHub>("/callHub");
+
 
 
 app.Run();

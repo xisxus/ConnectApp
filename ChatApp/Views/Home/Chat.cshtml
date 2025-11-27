@@ -103,9 +103,38 @@
                 </div>
             </div>
 
+            @*<div class="col-md-8 chat-panel">
+            <div class="topbar d-flex justify-content-between align-items-center">
+                <div><strong id="targetLabel">Public</strong></div>
+                <div class="small text-muted">Welcome, @User.Identity!.Name</div>
+            </div>
+
+            <div id="messages" class="messages"></div>
+
+            <div class="p-3 bg-white">
+                <div id="typingIndicator" class="typing mb-1"></div>
+                <div class="input-group">
+                    <input id="messageInput" class="form-control" placeholder="Type a message" />
+                    <button id="sendBtn" class="btn btn-success">Send</button>
+                </div>
+            </div>
+
+
+            <button id="voiceCallBtn" class="btn btn-sm btn-outline-primary">📞 Voice</button>
+            <button id="videoCallBtn" class="btn btn-sm btn-outline-primary">🎥 Video</button>
+
+
+
+        </div>*@
+
+
             <div class="col-md-8 chat-panel">
                 <div class="topbar d-flex justify-content-between align-items-center">
-                    <div><strong id="targetLabel">Public</strong></div>
+                    <div>
+                        <strong id="targetLabel">Public</strong>
+                        <button id="voiceCallBtn" class="btn btn-sm btn-outline-primary ms-2">📞 Voice</button>
+                        <button id="videoCallBtn" class="btn btn-sm btn-outline-primary">🎥 Video</button>
+                    </div>
                     <div class="small text-muted">Welcome, @User.Identity!.Name</div>
                 </div>
 
@@ -119,14 +148,55 @@
                     </div>
                 </div>
             </div>
+
+
+
+
+
         </div>
     </div>
+
+
+    <!-- Incoming call modal -->
+    <div id="incomingCallModal" class="modal" tabindex="-1" style="display:none;">
+        <div class="modal-dialog modal-sm">
+            <div class="modal-content">
+                <div class="modal-body">
+                    <p id="incomingCallText">Incoming call...</p>
+                    <div class="d-flex justify-content-between">
+                        <button id="acceptCallBtn" class="btn btn-success">Accept</button>
+                        <button id="rejectCallBtn" class="btn btn-danger">Reject</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Call area (local + remote video + hangup) -->
+    <div id="callContainer" style="display:none; position:fixed; right:20px; bottom:20px; width:360px; z-index:1050;">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span id="callWithLabel">Call with ...</span>
+                <button id="hangupBtn" class="btn btn-sm btn-danger">Hang up</button>
+            </div>
+            <div class="card-body">
+                <video id="remoteVideo" autoplay playsinline style="width:100%; background:#000;"></video>
+                <video id="localVideo" autoplay muted playsinline style="width:80px; position:absolute; right:10px; bottom:60px; border:1px solid #ccc;"></video>
+            </div>
+        </div>
+    </div>
+
+
+
+
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js"></script>
     <script>
     const currentUser = "@User.Identity!.Name";
     let connection = null;
-    let selectedTarget = { type: 'public', name: null };
+        //let selectedTarget = { type: 'public', name: null };
+
+        window.selectedTarget = { type: 'public', name: null }; // Make it global
     const usersListEl = document.getElementById('usersList');
     const groupsListEl = document.getElementById('groupsList');
     const messagesEl = document.getElementById('messages');
@@ -229,26 +299,49 @@
       });
     }
 
-    async function selectUser(u) {
-      selectedTarget = { type:'user', name: u };
-      targetLabel.textContent = `Chat: ${u}`;
-      messagesEl.innerHTML = '';
-      await loadConversation('user', u);
-    }
+    //async function selectUser(u) {
+    //  selectedTarget = { type:'user', name: u };
+    //  targetLabel.textContent = `Chat: ${u}`;
+    //  messagesEl.innerHTML = '';
+    //  await loadConversation('user', u);
+    //}
 
-    async function selectGroup(g) {
-      selectedTarget = { type:'group', name: g };
-      targetLabel.textContent = `Group: ${g}`;
-      messagesEl.innerHTML = '';
-      await loadConversation('group', g);
-    }
+    //async function selectGroup(g) {
+    //  selectedTarget = { type:'group', name: g };
+    //  targetLabel.textContent = `Group: ${g}`;
+    //  messagesEl.innerHTML = '';
+    //  await loadConversation('group', g);
+    //}
 
-    async function selectPublic() {
-      selectedTarget = { type:'public', name: null };
-      targetLabel.textContent = 'Public';
-      messagesEl.innerHTML = '';
-      await loadConversation('public', null);
-    }
+    //async function selectPublic() {
+    //  selectedTarget = { type:'public', name: null };
+    //  targetLabel.textContent = 'Public';
+    //  messagesEl.innerHTML = '';
+    //  await loadConversation('public', null);
+        //}
+
+
+        async function selectUser(u) {
+            window.selectedTarget = { type: 'user', name: u };  // Add window.
+            targetLabel.textContent = `Chat: ${u}`;
+            messagesEl.innerHTML = '';
+            await loadConversation('user', u);
+        }
+
+        async function selectGroup(g) {
+            window.selectedTarget = { type: 'group', name: g };  // Add window.
+            targetLabel.textContent = `Group: ${g}`;
+            messagesEl.innerHTML = '';
+            await loadConversation('group', g);
+        }
+
+        async function selectPublic() {
+            window.selectedTarget = { type: 'public', name: null };  // Add window.
+            targetLabel.textContent = 'Public';
+            messagesEl.innerHTML = '';
+            await loadConversation('public', null);
+        }
+
 
     async function loadConversation(type, name){
       const url = `/Home/GetConversation?type=${encodeURIComponent(type)}${name?`&name=${encodeURIComponent(name)}`:''}`;
@@ -297,5 +390,12 @@
 
     init().catch(err => console.error(err));
     </script>
+
+   
+   
+
+
+    <script src="~/js/call.js"></script>
+
 </body>
 </html>
