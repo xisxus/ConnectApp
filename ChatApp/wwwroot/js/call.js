@@ -6,35 +6,21 @@ const callHubConnection = new signalR.HubConnectionBuilder()
     .withAutomaticReconnect()
     .build();
 
-let pc = null;                 // RTCPeerConnection
+let pc = null;
 let localStream = null;
 let remoteStream = null;
-let currentCallPartner = null; // username
-let currentCallType = null;    // "audio" or "video"
-let pendingOffer = null;       // *** ADDED: Store offer until user accepts ***
+let currentCallPartner = null;
+let currentCallType = null;
+let pendingOffer = null;
+let isCallActive = false;
 
-// STUN servers - add TURN if needed for NAT traversal in production
 const rtcConfig = {
     iceServers: [
-        { urls: "stun:stun.l.google.com:19302" }
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" }
     ]
 };
 
-// UI elements (assumes IDs from Chat.cshtml)
-const voiceBtn = document.getElementById("voiceCallBtn");
-const videoBtn = document.getElementById("videoCallBtn");
-const incomingModal = document.getElementById("incomingCallModal");
-const incomingText = document.getElementById("incomingCallText");
-const acceptBtn = document.getElementById("acceptCallBtn");
-const rejectBtn = document.getElementById("rejectCallBtn");
-const callContainer = document.getElementById("callContainer");
-const callWithLabel = document.getElementById("callWithLabel");
-const hangupBtn = document.getElementById("hangupBtn");
-const localVideoEl = document.getElementById("localVideo");
-const remoteVideoEl = document.getElementById("remoteVideo");
-//const targetLabel = document.getElementById("targetLabel");
-
-// Helper to get the currently selected chat target username from your chat UI.
 function getSelectedChatTargetUsername() {
     if (window.selectedTarget && window.selectedTarget.type === 'user') {
         return window.selectedTarget.name;
@@ -43,39 +29,57 @@ function getSelectedChatTargetUsername() {
 }
 
 async function startCallAsCaller(targetUsername, callType) {
-    if (!targetUsername) { alert("Select a user to call"); return; }
+    if (!targetUsername) {
+        alert("Select a user to call");
+        return;
+    }
+
+    if (isCallActive) {
+        alert("You are already in a call");
+        return;
+    }
+
+    // Check if browser supports getUserMedia
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        alert("Your browser does not support video/audio calls. Please use a modern browser like Chrome, Firefox, or Edge.");
+        return;
+    }
+
     currentCallPartner = targetUsername;
     currentCallType = callType;
 
     try {
-        // Acquire local media (audio or audio+video)
+        // Request permissions first
         localStream = await navigator.mediaDevices.getUserMedia({
             audio: true,
             video: callType === "video"
         });
 
-        // show local preview
+        isCallActive = true;
+
+        const localVideoEl = document.getElementById("localVideo");
         if (localVideoEl) localVideoEl.srcObject = localStream;
 
-        // create RTCPeerConnection
         await createPeerConnection();
 
-        // add tracks
         localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
-        // create offer
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
 
-        // notify target via SignalR
         await callHubConnection.invoke("CallUser", targetUsername, callType);
-        // send offer
         await callHubConnection.invoke("SendOffer", targetUsername, JSON.stringify(offer));
 
-        // show local call window
         showCallUI(targetUsername);
     } catch (err) {
         console.error("startCallAsCaller error:", err);
+        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+            alert("Camera/microphone permission denied. Please allow access and try again.");
+        } else if (err.name === 'NotFoundError') {
+            alert("No camera or microphone found. Please connect a device and try again.");
+        } else {
+            alert("Failed to start call: " + err.message);
+        }
         cleanupCall();
     }
 }
@@ -83,20 +87,24 @@ async function startCallAsCaller(targetUsername, callType) {
 async function createPeerConnection() {
     pc = new RTCPeerConnection(rtcConfig);
 
-    // ensure remote stream container
     remoteStream = new MediaStream();
+    const remoteVideoEl = document.getElementById("remoteVideo");
     if (remoteVideoEl) remoteVideoEl.srcObject = remoteStream;
 
-    // ontrack collects remote media
     pc.ontrack = (evt) => {
         evt.streams.forEach(s => {
-            s.getTracks().forEach(t => remoteStream.addTrack(t));
+            s.getTracks().forEach(t => {
+                if (!remoteStream.getTracks().includes(t)) {
+                    remoteStream.addTrack(t);
+                }
+            });
         });
     };
 
     pc.onicecandidate = (evt) => {
         if (evt.candidate && currentCallPartner) {
-            callHubConnection.invoke("SendIceCandidate", currentCallPartner, JSON.stringify(evt.candidate)).catch(console.error);
+            callHubConnection.invoke("SendIceCandidate", currentCallPartner, JSON.stringify(evt.candidate))
+                .catch(err => console.error("Failed to send ICE candidate:", err));
         }
     };
 
@@ -106,124 +114,151 @@ async function createPeerConnection() {
             cleanupCall();
         }
     };
+
+    pc.oniceconnectionstatechange = () => {
+        console.log("ICE state:", pc.iceConnectionState);
+    };
 }
 
-// Accept call (callee)
-// *** FIXED: Now properly sets remote description before creating answer ***
 async function acceptCall() {
-    incomingModal.style.display = "none";
+    const incomingModal = document.getElementById("incomingCallModal");
+    if (incomingModal) incomingModal.classList.remove('show');
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        alert("Your browser does not support video/audio calls.");
+        rejectCall();
+        return;
+    }
 
     try {
-        // get local media - use video for both audio and video calls
         localStream = await navigator.mediaDevices.getUserMedia({
             audio: true,
             video: currentCallType === "video"
         });
 
+        isCallActive = true;
+
+        const localVideoEl = document.getElementById("localVideo");
         if (localVideoEl) localVideoEl.srcObject = localStream;
 
         await createPeerConnection();
 
-        // add tracks
         localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
-        // *** FIXED: Set remote description from pending offer ***
         if (pendingOffer) {
-            await pc.setRemoteDescription(pendingOffer);
-            pendingOffer = null; // clear it
+            await pc.setRemoteDescription(new RTCSessionDescription(pendingOffer));
+            pendingOffer = null;
         }
 
-        // create answer
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
 
-        // *** ADDED: Notify caller that call was accepted ***
         await callHubConnection.invoke("AcceptCall", currentCallPartner);
-
-        // send answer to caller
         await callHubConnection.invoke("SendAnswer", currentCallPartner, JSON.stringify(answer));
+
         showCallUI(currentCallPartner);
     } catch (err) {
         console.error("acceptCall error:", err);
+        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+            alert("Camera/microphone permission denied.");
+        } else {
+            alert("Failed to accept call: " + err.message);
+        }
         cleanupCall();
     }
 }
 
-// Reject call (callee)
 async function rejectCall() {
-    incomingModal.style.display = "none";
+    const incomingModal = document.getElementById("incomingCallModal");
+    if (incomingModal) incomingModal.classList.remove('show');
+
     if (currentCallPartner) {
         await callHubConnection.invoke("RejectCall", currentCallPartner).catch(console.error);
-        currentCallPartner = null;
-        pendingOffer = null; // *** ADDED: Clear pending offer ***
     }
+    currentCallPartner = null;
+    currentCallType = null;
+    pendingOffer = null;
 }
 
-// Hang up (either side)
 async function hangup() {
-    if (currentCallPartner) await callHubConnection.invoke("Hangup", currentCallPartner).catch(console.error);
+    if (currentCallPartner) {
+        await callHubConnection.invoke("Hangup", currentCallPartner).catch(console.error);
+    }
     cleanupCall();
 }
 
-// cleanup local resources and UI
 function cleanupCall() {
     try {
         if (pc) {
             pc.ontrack = null;
             pc.onicecandidate = null;
-            try { pc.close(); } catch { }
+            pc.onconnectionstatechange = null;
+            pc.oniceconnectionstatechange = null;
+            try { pc.close(); } catch (e) { console.error("Error closing peer connection:", e); }
             pc = null;
         }
 
         if (localStream) {
-            localStream.getTracks().forEach(t => t.stop());
+            localStream.getTracks().forEach(t => {
+                try { t.stop(); } catch (e) { console.error("Error stopping track:", e); }
+            });
             localStream = null;
+            const localVideoEl = document.getElementById("localVideo");
             if (localVideoEl) localVideoEl.srcObject = null;
         }
 
         if (remoteStream) {
-            remoteStream.getTracks().forEach(t => t.stop());
+            remoteStream.getTracks().forEach(t => {
+                try { t.stop(); } catch (e) { console.error("Error stopping remote track:", e); }
+            });
             remoteStream = null;
+            const remoteVideoEl = document.getElementById("remoteVideo");
             if (remoteVideoEl) remoteVideoEl.srcObject = null;
         }
 
         currentCallPartner = null;
         currentCallType = null;
-        pendingOffer = null; // *** ADDED: Clear pending offer ***
-        callContainer.style.display = "none";
+        pendingOffer = null;
+        isCallActive = false;
+
+        const callContainer = document.getElementById("callContainer");
+        if (callContainer) callContainer.style.display = "none";
     } catch (e) {
         console.warn("cleanup error", e);
     }
 }
 
 function showCallUI(partner) {
-    callWithLabel.textContent = `Call with ${partner}`;
-    callContainer.style.display = "block";
+    const callWithLabel = document.getElementById("callWithLabel");
+    const callContainer = document.getElementById("callContainer");
+
+    if (callWithLabel) callWithLabel.textContent = `Call with ${partner}`;
+    if (callContainer) callContainer.style.display = "block";
 }
 
-// ---------- SignalR client handlers ----------
-
+// SignalR handlers
 callHubConnection.on("IncomingCall", async (fromUsername, callType) => {
-    // Save callType and current partner
     currentCallPartner = fromUsername;
     currentCallType = callType;
-    // If you're busy in another call, optionally auto-reject
-    if (pc) {
-        // busy
+
+    if (isCallActive || pc) {
         await callHubConnection.invoke("RejectCall", fromUsername).catch(console.error);
         return;
     }
-    // Show incoming UI
-    incomingText.textContent = `${fromUsername} is calling (${callType})`;
-    incomingModal.style.display = "block";
+
+    const incomingText = document.getElementById("incomingCallText");
+    const incomingModal = document.getElementById("incomingCallModal");
+
+    if (incomingText) incomingText.textContent = `${fromUsername} is calling (${callType})`;
+    if (incomingModal) incomingModal.classList.add('show');
 });
 
 callHubConnection.on("CallFailed", (targetUser, reason) => {
     alert("Call failed: " + reason);
+    cleanupCall();
 });
 
 callHubConnection.on("CallAccepted", async (byUsername) => {
-    // caller: callee accepted
     console.log("Call accepted by", byUsername);
 });
 
@@ -237,66 +272,108 @@ callHubConnection.on("CallEnded", (byUsername) => {
     cleanupCall();
 });
 
-// *** FIXED: Store offer instead of immediately setting it ***
 callHubConnection.on("ReceiveOffer", async (fromUsername, offerJson) => {
-    currentCallPartner = fromUsername;
+    try {
+        const offerDesc = JSON.parse(offerJson);
+        pendingOffer = offerDesc;
 
-    // Parse and store the offer
-    const offerDesc = JSON.parse(offerJson);
-    pendingOffer = offerDesc;
-
-    // Show incoming modal - user will accept/reject
-    // (Modal already shown by IncomingCall event, but just in case)
-    if (incomingModal.style.display !== "block") {
-        incomingText.textContent = `${fromUsername} is calling`;
-        incomingModal.style.display = "block";
+        if (!currentCallPartner) {
+            currentCallPartner = fromUsername;
+        }
+    } catch (err) {
+        console.error("Error receiving offer:", err);
     }
 });
 
 callHubConnection.on("ReceiveAnswer", async (fromUsername, answerJson) => {
-    if (!pc) return;
-    const ans = JSON.parse(answerJson);
-    await pc.setRemoteDescription(ans);
+    if (!pc) {
+        console.warn("Received answer but no peer connection exists");
+        return;
+    }
+
+    try {
+        const ans = JSON.parse(answerJson);
+        await pc.setRemoteDescription(new RTCSessionDescription(ans));
+        console.log("Remote description set successfully");
+    } catch (err) {
+        console.error("Error setting remote description:", err);
+    }
 });
 
 callHubConnection.on("ReceiveIceCandidate", async (fromUsername, candidateJson) => {
-    if (!pc) return;
+    if (!pc) {
+        console.warn("Received ICE candidate but no peer connection exists");
+        return;
+    }
+
     try {
         const candidate = JSON.parse(candidateJson);
-        await pc.addIceCandidate(candidate);
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
     } catch (e) {
         console.error("addIceCandidate error", e);
     }
 });
 
-// ---------- wire UI buttons ----------
+// Initialize when DOM is ready
+function initCallButtons() {
+    const voiceBtn = document.getElementById("voiceCallBtn");
+    const videoBtn = document.getElementById("videoCallBtn");
+    const acceptBtn = document.getElementById("acceptCallBtn");
+    const rejectBtn = document.getElementById("rejectCallBtn");
+    const hangupBtn = document.getElementById("hangupBtn");
 
-if (voiceBtn) {
-    voiceBtn.addEventListener("click", async () => {
-        const target = getSelectedChatTargetUsername();
-        if (!target) { alert("Select a user to call (click a user from the list)"); return; }
-        await startCallAsCaller(target, "audio");
-    });
+    if (voiceBtn) {
+        voiceBtn.addEventListener("click", async () => {
+            const target = getSelectedChatTargetUsername();
+            if (!target) {
+                alert("Select a user to call (click a user from the list)");
+                return;
+            }
+            await startCallAsCaller(target, "audio");
+        });
+    }
+
+    if (videoBtn) {
+        videoBtn.addEventListener("click", async () => {
+            const target = getSelectedChatTargetUsername();
+            if (!target) {
+                alert("Select a user to call (click a user from the list)");
+                return;
+            }
+            await startCallAsCaller(target, "video");
+        });
+    }
+
+    if (acceptBtn) acceptBtn.addEventListener("click", acceptCall);
+    if (rejectBtn) rejectBtn.addEventListener("click", rejectCall);
+    if (hangupBtn) hangupBtn.addEventListener("click", hangup);
 }
-if (videoBtn) {
-    videoBtn.addEventListener("click", async () => {
-        const target = getSelectedChatTargetUsername();
-        if (!target) { alert("Select a user to call (click a user from the list)"); return; }
-        await startCallAsCaller(target, "video");
-    });
-}
 
-if (acceptBtn) acceptBtn.addEventListener("click", acceptCall);
-if (rejectBtn) rejectBtn.addEventListener("click", rejectCall);
-if (hangupBtn) hangupBtn.addEventListener("click", hangup);
-
-// Start the hub connection
+// Start hub connection
 (async function startHub() {
     try {
         await callHubConnection.start();
-        console.log("CallHub connected");
+        console.log("CallHub connected successfully");
+
+        // Initialize buttons after connection is established
+        initCallButtons();
     } catch (err) {
-        console.error("CallHub start error:", err);
-        setTimeout(startHub, 2000);
+        console.error("CallHub connection error:", err);
+        setTimeout(startHub, 5000);
     }
 })();
+
+// Handle reconnection
+callHubConnection.onreconnecting((error) => {
+    console.warn("CallHub reconnecting:", error);
+});
+
+callHubConnection.onreconnected((connectionId) => {
+    console.log("CallHub reconnected:", connectionId);
+});
+
+callHubConnection.onclose((error) => {
+    console.error("CallHub connection closed:", error);
+    cleanupCall();
+    setTimeout(startHub, 5000);
+});
