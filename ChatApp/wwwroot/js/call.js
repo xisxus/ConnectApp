@@ -41,7 +41,14 @@ async function startCallAsCaller(targetUsername, callType) {
 
     // Check if browser supports getUserMedia
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        alert("Your browser does not support video/audio calls. Please use a modern browser like Chrome, Firefox, or Edge.");
+        console.error("getUserMedia not supported. Protocol:", window.location.protocol);
+        console.error("Navigator.mediaDevices:", navigator.mediaDevices);
+
+        if (window.location.protocol === 'http:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+            alert("Video/audio calls require HTTPS. Please access the site using https:// or use localhost for testing.");
+        } else {
+            alert("Your browser does not support video/audio calls. Please update your browser.");
+        }
         return;
     }
 
@@ -125,7 +132,13 @@ async function acceptCall() {
     if (incomingModal) incomingModal.classList.remove('show');
 
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        alert("Your browser does not support video/audio calls.");
+        console.error("getUserMedia not supported. Protocol:", window.location.protocol);
+
+        if (window.location.protocol === 'http:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+            alert("Video/audio calls require HTTPS. Please access the site using https:// or use localhost for testing.");
+        } else {
+            alert("Your browser does not support video/audio calls. Please update your browser.");
+        }
         rejectCall();
         return;
     }
